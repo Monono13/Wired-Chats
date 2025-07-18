@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+    <div class="screen screen-visible" id="screen1">
+        <h2>Welcome to Wired Chat!</h2>
+
+        <div style="margin-bottom: 20px;">
+            <input type="text" id="username" placeholder="Enter your username" />
+        </div>
+
+        <div style="margin-bottom: 20px;">
+            <input type="text" id="peer_ip" placeholder="Enter peer IP" />
+        </div>
+
+        <div>
+            <button onclick="join()">Start Chat</button>
+        </div>
+    </div>
+
+    <div class="screen screen-hidden" id="screen2">
+        <div id="connected_username" class="chat-title"></div>
+        <div id="messages" class="messages"></div>
+
+        <ul class="emoji-container">
+            <li onclick="emoji(this)">
+                <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2" />
+                    <path d="M7 9l5 -5l5 5" />
+                    <path d="M12 4l0 12" />
+                </svg>
+
+            </li>
+        </ul>
+
+        <div class="chat-input-container">
+            <div class="chat-input">
+                <textarea class="message-area" id="message" rows="1" placeholder=""></textarea>
+                <button onclick="send()">
+                    <svg xmlns="http://www.w3.org/2000/svg" height="30px" viewBox="0 -960 960 960" width="30px" fill="#fff">
+                        <path d="M140-190v-580l688.46 290L140-190Zm60-90 474-200-474-200v147.69L416.92-480 200-427.69V-280Zm0 0v-400 400Z"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
+
