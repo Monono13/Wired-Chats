@@ -1,1 +1,2 @@
-A simple peer-to-peer chat app developed in Rust using Tauri.
+Wired Chats
+A chat app for local comunication in Rust using Tauri.
