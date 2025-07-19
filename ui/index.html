@@ -27,23 +27,18 @@
         <div id="connected_username" class="chat-title"></div>
         <div id="messages" class="messages"></div>
 
-        <ul class="emoji-container">
-            <li onclick="emoji(this)">
-                <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2" />
-                    <path d="M7 9l5 -5l5 5" />
-                    <path d="M12 4l0 12" />
-                </svg>
-
-            </li>
-        </ul>
-
         <div class="chat-input-container">
             <div class="chat-input">
                 <textarea class="message-area" id="message" rows="1" placeholder=""></textarea>
-                <button onclick="send()">
+                <button onclick="send()" title="Send Message">
                     <svg xmlns="http://www.w3.org/2000/svg" height="30px" viewBox="0 -960 960 960" width="30px" fill="#fff" class="send-button">
                         <path d="M140-190v-580l688.46 290L140-190Zm60-90 474-200-474-200v147.69L416.92-480 200-427.69V-280Zm0 0v-400 400Z"/>
+                    </svg>
+                </button>
+                <button onclick="send_file()" title="Send File" class="file-button">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21.44 11.05a5.5 5.5 0 0 0-7.78 0l-7.66 7.66a4 4 0 0 0 5.66 5.66l6.54-6.54"></path>
+                        <path d="M13.5 7.5l3 3L8.5 18l-3-3"></path>
                     </svg>
                 </button>
             </div>

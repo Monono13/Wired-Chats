@@ -26,25 +26,19 @@ async function join() {
 }
 
 async function send() {
-    let message = document.getElementById("message").value;
-    if (!message.trim()) return;
+    let message = document.getElementById("message").value.trim();
+    if (!message) return;
 
     let messages = document.getElementById("messages");
     messages.appendChild(createMessage(message, "sender"));
     messages.scrollTop = messages.scrollHeight;
 
-    await invoke("send", { message: message, is_emoji: false });
+    await invoke("send", { message: message, is_file: false });
     document.getElementById("message").value = "";
 }
 
-async function emoji(sender) {
-    let emoji = sender.innerHTML;
-    let messages = document.getElementById("messages");
-
-    messages.appendChild(createMessage(emoji, "sender emoji"));
-    messages.scrollTop = messages.scrollHeight;
-
-    await invoke("send", { message: emoji, is_emoji: true });
+async function send_file() {
+    await invoke("send_file");
 }
 
 async function init() {
@@ -54,11 +48,24 @@ async function init() {
 
         if (msg.first_connect) {
             console.log(`[CONNECTED] ${msg.username} joined`);
+        } else if (msg.is_file) {
+            // Procesar archivo recibido
+            const [fileName, base64Data] = msg.message.split("|");
+
+            // Crear enlace de descarga
+            const link = document.createElement("a");
+            link.href = "data:application/octet-stream;base64," + base64Data;
+            link.download = fileName;
+            link.innerText = `📁 ${fileName}`;
+            link.classList.add("file");
+
+            let container = createMessage("", "receiver");
+            container.appendChild(link);
+            messages.appendChild(container);
+        } else {
+            messages.appendChild(createMessage(msg.message, "receiver"));
         }
 
-        messages.appendChild(
-            createMessage(msg.message, "receiver " + (msg.is_emoji ? "emoji" : ""))
-        );
         messages.scrollTop = messages.scrollHeight;
     });
 }
