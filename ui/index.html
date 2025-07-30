@@ -1,51 +1,74 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="stylesheet" href="styles.css" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="styles.css" />
+  <title>Wired Chat</title>
 </head>
 <body>
 
-    <div class="screen screen-visible" id="screen1">
-        <h2>Welcome to Wired Chat!</h2>
+  <!-- Pantalla 1: Inicio -->
+  <div class="screen screen-visible" id="screen1">
+    <h2>Welcome to Wired Chat!</h2>
 
-        <div style="margin-bottom: 20px;">
-            <input type="text" id="username" placeholder="Enter your username" />
-        </div>
-
-        <div style="margin-bottom: 20px;">
-            <input type="text" id="peer_ip" placeholder="Enter peer IP" />
-        </div>
-
-        <div>
-            <button onclick="join()">Start Chat</button>
-        </div>
+    <div style="margin-bottom: 20px;">
+      <input type="text" id="username" placeholder="Enter your username" />
     </div>
 
-    <div class="screen screen-hidden" id="screen2">
-        <div id="connected_username" class="chat-title"></div>
-        <div id="messages" class="messages"></div>
-
-        <div class="chat-input-container">
-            <div class="chat-input">
-                <textarea class="message-area" id="message" rows="1" placeholder=""></textarea>
-                <button onclick="send()" title="Send Message">
-                    <svg xmlns="http://www.w3.org/2000/svg" height="30px" viewBox="0 -960 960 960" width="30px" fill="#fff" class="send-button">
-                        <path d="M140-190v-580l688.46 290L140-190Zm60-90 474-200-474-200v147.69L416.92-480 200-427.69V-280Zm0 0v-400 400Z"/>
-                    </svg>
-                </button>
-                <button onclick="send_file()" title="Send File" class="file-button">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21.44 11.05a5.5 5.5 0 0 0-7.78 0l-7.66 7.66a4 4 0 0 0 5.66 5.66l6.54-6.54"></path>
-                        <path d="M13.5 7.5l3 3L8.5 18l-3-3"></path>
-                    </svg>
-                </button>
-            </div>
-        </div>
+    <div style="margin-bottom: 20px;">
+      <input type="text" id="peer_ip" placeholder="Enter peer IP" />
     </div>
 
-    <script src="script.js"></script>
+    <div>
+      <button onclick="join()">Start Chat</button>
+    </div>
+  </div>
+
+  <!-- Pantalla 2: Chat -->
+  <div class="screen screen-hidden" id="screen2">
+
+    <!-- Barra lateral de chats -->
+    <div class="sidebar">
+      <h3>Chats</h3>
+      <ul id="chatList"></ul>
+
+      <!-- Agregar nuevo chat manualmente -->
+      <div class="add-chat-form">
+        <input type="text" id="new_chat_ip" placeholder="IP del nuevo chat" />
+        <button onclick="addChatFromInput()">Agregar</button>
+      </div>
+    </div>
+
+    <!-- Área de conversación -->
+    <div class="main-chat">
+      <div id="connected_username" class="chat-title">Ningún chat seleccionado</div>
+
+      <div id="messages" class="messages"></div>
+
+      <div class="chat-input-container">
+        <div class="chat-input">
+
+          <textarea class="message-area" id="message" rows="1" placeholder="Escribe un mensaje..."></textarea>
+
+          <button onclick="send()" title="Enviar mensaje">
+            <svg xmlns="http://www.w3.org/2000/svg" height="30px" viewBox="0 -960 960 960" width="30px" fill="#fff" class="send-button">
+              <path d="M140-190v-580l688.46 290L140-190Zm60-90 474-200-474-200v147.69L416.92-480 200-427.69V-280Zm0 0v-400 400Z"/>
+            </svg>
+          </button>
+
+          <button onclick="send_file()" title="Enviar archivo" class="file-button">
+            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21.44 11.05a5.5 5.5 0 0 0-7.78 0l-7.66 7.66a4 4 0 0 0 5.66 5.66l6.54-6.54"></path>
+              <path d="M13.5 7.5l3 3L8.5 18l-3-3"></path>
+            </svg>
+          </button>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
 </body>
 </html>
-
