@@ -55,10 +55,24 @@ function loadChatMessages(ip) {
     }
 }
 
-function switchChat(ip) {
+async function switchChat(ip) {
     currentChatIp = ip;
     document.getElementById("connected_username").innerText = "Conectado a " + ip;
     loadChatMessages(ip);
+
+    // Aquí agregamos la llamada al backend para cambiar la conexión activa
+    if (currentUsername) {
+        try {
+            await invoke("switch_connection", {
+                ip: ip,
+                username: currentUsername
+            });
+            console.log("[UI] Cambiada conexión a", ip);
+        } catch (err) {
+            console.error("[UI] Error al cambiar conexión:", err);
+            alert("Error al cambiar de conexión: " + err);
+        }
+    }
 }
 
 function addChat() {
@@ -67,7 +81,7 @@ function addChat() {
     input.focus();
 }
 
-function addChatFromInput() {
+async function addChatFromInput() {
     if (!currentUsername) {
         alert("No se encontró el nombre de usuario. Por favor inicia sesión de nuevo.");
         return;
@@ -84,7 +98,7 @@ function addChatFromInput() {
 
     chats[peerIp] = [];
     addChatToSidebar(peerIp);
-    switchChat(peerIp);
+    await switchChat(peerIp);
     input.value = "";
 }
 
@@ -99,7 +113,7 @@ async function send() {
     messages.appendChild(msgElement);
     messages.scrollTop = messages.scrollHeight;
 
-    await invoke("send", { message: message, is_file: false });
+    await invoke("send", { message: message, is_file: false, ip:currentChatIp });
     document.getElementById("message").value = "";
 }
 

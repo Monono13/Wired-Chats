@@ -33,6 +33,7 @@ fn main() {
             rt: Arc::new(rt),
             connection: Arc::new(Mutex::new(None)),
             current_ip: Arc::new(Mutex::new(None)),
+            ips: Arc::new(Mutex::new(Vec::new())),
         })
         .invoke_handler(tauri::generate_handler![
             server_listen,
@@ -53,6 +54,7 @@ async fn server_listen<'a>(
 ) -> Result<(), String> {
     let rt = state.rt.clone();
     let streams = state.streams.clone();
+    let ips = state.ips.clone();
     let username_clone = username.clone();
     let state_username = state.username.clone();
     let state_connection = state.connection.clone();
@@ -73,10 +75,17 @@ async fn server_listen<'a>(
 
                     let (read_half, write_half) = socket.into_split();
 
+                    // Guardamos la conexión en el vector de conexiones
                     {
+                        let wrapped = Arc::new(Mutex::new(write_half));
+                        streams.lock().await.push(wrapped.clone());
+
                         let mut conn_lock = state_connection.lock().await;
-                        *conn_lock = Some(write_half);
+                        *conn_lock = Some(wrapped);
                     }
+
+                    // Guardamos la IP también (esto puede ir separado si prefieres)
+                    ips.lock().await.push(addr.ip().to_string());
 
                     let msg = Message {
                         first_connect: true,
@@ -88,14 +97,16 @@ async fn server_listen<'a>(
                     let payload = serde_json::to_string(&msg).unwrap();
 
                     {
-                        if let Some(mut conn) = state_connection.lock().await.as_mut() {
-                            let _ = conn
+                        let conn = state_connection.lock().await;
+                        if let Some(writer_arc) = &*conn {
+                            let mut writer = writer_arc.lock().await;
+                            let _ = writer
                                 .write_all(format!("{:010}{}", payload.len(), payload).as_bytes())
                                 .await;
                         }
                     }
 
-                    start_reader(app.clone(), read_half);
+                    start_reader(app.clone(), read_half, addr.ip().to_string());
                 }
 
                 Err(e) => eprintln!("[SERVER] Connection failed: {}", e),
@@ -110,7 +121,7 @@ async fn server_listen<'a>(
 
 
 #[tauri::command]
-fn client_connect(app: AppHandle, state: State<AppState>, host: String, username: String) {
+fn client_connect(app: AppHandle, state: State<AppState>, host: String, username: String, ip: String) {
     let rt = state.rt.clone();
     let state_username = state.username.clone();
     let state_connection = state.connection.clone();
@@ -127,7 +138,8 @@ fn client_connect(app: AppHandle, state: State<AppState>, host: String, username
 
                 {
                     let mut conn_lock = state_connection.lock().await;
-                    *conn_lock = Some(write_half);
+                    *conn_lock = Some(Arc::new(Mutex::new(write_half)));
+
                 }
 
                 let msg = Message {
@@ -141,13 +153,15 @@ fn client_connect(app: AppHandle, state: State<AppState>, host: String, username
                 {
                     let mut conn_lock = state_connection.lock().await;
                     if let Some(conn) = conn_lock.as_mut() {
-                        let _ = conn
+                        let mut write_half = conn.lock().await;
+                        let _ = write_half
                             .write_all(format!("{:010}{}", payload.len(), payload).as_bytes())
                             .await;
                     }
+
                 }
 
-                start_reader(app, read_half);
+                start_reader(app, read_half, ip);
             }
             Err(e) => eprintln!("[CLIENT] Failed to connect: {}", e),
         }
@@ -176,10 +190,12 @@ fn send(state: State<AppState>, message: String, is_file: bool) {
             let payload = serde_json::to_string(&msg).unwrap();
             let data = format!("{:010}{}", payload.len(), payload);
 
-            let _ = stream.write_all(data.as_bytes()).await;
+            let mut write_half = stream.lock().await;
+            let _ = write_half.write_all(data.as_bytes()).await;
         } else {
             eprintln!("[SEND] No hay conexión activa");
         }
+
     });
 }
 
@@ -234,7 +250,8 @@ fn send_file(state: State<AppState>) {
 
         let mut conn_lock = connection.lock().await;
         if let Some(stream) = conn_lock.as_mut() {
-            if let Err(e) = stream.write_all(data.as_bytes()).await {
+            let mut write_half = stream.lock().await;
+            if let Err(e) = write_half.write_all(data.as_bytes()).await {
                 eprintln!("[FILE] Error al enviar archivo: {}", e);
             } else {
                 println!("[FILE] Archivo '{}' enviado correctamente", file_name);
@@ -242,39 +259,53 @@ fn send_file(state: State<AppState>) {
         } else {
             eprintln!("[FILE] No hay conexión activa para enviar el archivo");
         }
+
     });
 }
 
 
 #[tauri::command]
-async fn switch_connection(app: AppHandle, state: State<'_, AppState>, ip: String) -> Result<(), String> {
-    let addr = format!("{}:{}", ip, PORT);
+async fn switch_connection(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    ip: String,
+) -> Result<(), String> {
     let mut connection_lock = state.connection.lock().await;
     let mut current_ip_lock = state.current_ip.lock().await;
 
+    println!("[SWITCH] Solicitado cambio de conexión a {}", ip);
+
     // Cierra la conexión anterior si existe
-    if let Some(mut old_write) = connection_lock.take() {
-        let _ = old_write.shutdown().await;
-        println!("[SWITCH] Conexión anterior cerrada");
+    if let Some(old_write) = connection_lock.take() {
+        if let Ok(mut locked) = old_write.try_lock() {
+            let _ = locked.shutdown().await;
+            println!("[SWITCH] Conexión anterior cerrada");
+        }
     }
 
-    // Intenta nueva conexión
+    // Prepara la nueva dirección con puerto
+    let addr = format!("{}:3333", ip);
+    println!("[SWITCH] Intentando conectar a: {}", addr);
+
+    // Intenta conectar al nuevo IP
     match TcpStream::connect(&addr).await {
         Ok(socket) => {
             let (read_half, write_half) = socket.into_split();
-            *connection_lock = Some(write_half);
+
+            // Guarda la nueva conexión
+            *connection_lock = Some(Arc::new(Mutex::new(write_half)));
             *current_ip_lock = Some(ip.clone());
 
             println!("[SWITCH] Conectado a {}", ip);
 
-            // Arranca el listener con la parte de lectura
-            start_reader(app, read_half);
+            // Inicia el listener con la nueva conexión
+            start_reader(app, read_half, ip.clone());
 
             Ok(())
         }
         Err(e) => {
             eprintln!("[SWITCH] Falló la conexión: {}", e);
-            Err(format!("No se pudo conectar a {}: {}", ip, e))
+            Err(format!("No se pudo conectar a {}: {}", addr, e))
         }
     }
 }
@@ -282,7 +313,8 @@ async fn switch_connection(app: AppHandle, state: State<'_, AppState>, ip: Strin
 
 
 
-fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf) {
+
+fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, ip: String) {
     tokio::spawn(async move {
         let peer_ip = stream.peer_addr().ok().map(|addr| addr.ip().to_string());
 
@@ -335,11 +367,12 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf) {
 
 #[derive(Clone)]
 struct AppState {
-    streams: Arc<Mutex<Vec<tokio::net::tcp::OwnedWriteHalf>>>,
+    streams: Arc<Mutex<Vec<Arc<Mutex<OwnedWriteHalf>>>>>,
     username: Arc<Mutex<String>>,
     rt: Arc<Runtime>,
-    connection: Arc<Mutex<Option<OwnedWriteHalf>>>,
+    connection: Arc<Mutex<Option<Arc<Mutex<OwnedWriteHalf>>>>>,
     current_ip: Arc<Mutex<Option<String>>>,
+    ips: Arc<Mutex<Vec<String>>>,
 }
 
 #[derive(Serialize, serde::Deserialize)]
