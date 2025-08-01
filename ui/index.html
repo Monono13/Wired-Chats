@@ -16,10 +16,6 @@
       <input type="text" id="username" placeholder="Enter your username" />
     </div>
 
-    <div style="margin-bottom: 20px;">
-      <input type="text" id="peer_ip" placeholder="Enter peer IP" />
-    </div>
-
     <div>
       <button onclick="join()">Start Chat</button>
     </div>
@@ -36,6 +32,7 @@
       <!-- Agregar nuevo chat manualmente -->
       <div class="add-chat-form">
         <input type="text" id="new_chat_ip" placeholder="IP del nuevo chat" />
+        <small id="ip-error" style="color: red; display: none;">IP inválida</small>
         <button onclick="addChatFromInput()">Agregar</button>
       </div>
     </div>

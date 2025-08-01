@@ -7,7 +7,6 @@ let chats = {}; // Objeto para almacenar mensajes por IP
 
 async function join() {
     let username = document.getElementById("username").value.trim();
-    let peerIp = document.getElementById("peer_ip").value.trim();
 
     if (!username) {
         alert("Please enter a username");
@@ -16,17 +15,14 @@ async function join() {
 
     currentUsername = username; // Guardar username globalmente
 
+    await invoke("server_listen", { username: username });
+
     document.querySelector("#screen1").classList.replace("screen-visible", "screen-hidden");
     document.querySelector("#screen2").classList.replace("screen-hidden", "screen-visible");
 
-    await invoke("server_listen", { username: username });
-
-    if (peerIp) {
-        await connectToPeer(peerIp, username);
-    }
-
     document.getElementById("connected_username").innerText = "Chatting as " + username;
 }
+
 
 async function connectToPeer(ip, username) {
     await invoke("client_connect", { host: ip, username: username });
@@ -81,6 +77,11 @@ function addChat() {
     input.focus();
 }
 
+function isValidIPv4(ip) {
+    const regex = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
+    return regex.test(ip);
+}
+
 async function addChatFromInput() {
     if (!currentUsername) {
         alert("No se encontró el nombre de usuario. Por favor inicia sesión de nuevo.");
@@ -88,8 +89,15 @@ async function addChatFromInput() {
     }
 
     const input = document.getElementById("new_chat_ip");
+    const error = document.getElementById("ip-error");
     const peerIp = input.value.trim();
-    if (!peerIp) return;
+
+    if (!isValidIPv4(peerIp)) {
+        error.style.display = "block";
+        return;
+    } else {
+        error.style.display = "none";
+    }
 
     if (chats[peerIp]) {
         alert("Este chat ya existe.");
@@ -168,7 +176,6 @@ async function init() {
 
         chats[ip].push(msgElement);
 
-        // Si este chat está activo, también lo mostramos
         if (currentChatIp === ip) {
             document.getElementById("messages").appendChild(msgElement);
             document.getElementById("messages").scrollTop = document.getElementById("messages").scrollHeight;
@@ -177,6 +184,44 @@ async function init() {
         }
     });
 
+    // ⬇️ Aquí agregas el input mask para la IP
+    const ipInput = document.getElementById("new_chat_ip");
+
+    ipInput.addEventListener("input", function (e) {
+        // Eliminar todo lo que no sea dígito ni punto
+        let value = e.target.value.replace(/[^\d.]/g, "");
+
+        // Evitar que haya más de 3 puntos
+        const parts = value.split(".");
+        if (parts.length > 4) {
+            parts.length = 4; // cortar a 4 partes máximo
+        }
+
+        // Validar que cada parte no tenga más de 3 dígitos
+        for (let i = 0; i < parts.length; i++) {
+            if (parts[i].length > 3) {
+                parts[i] = parts[i].slice(0, 3);
+            }
+        }
+
+        // Reconstruir valor con puntos
+        e.target.value = parts.join(".");
+    });
+
+    // (Opcional) Auto-agregar punto si el último segmento tiene 3 dígitos y no hay 4 segmentos
+    ipInput.addEventListener("keyup", function (e) {
+        const val = this.value;
+        const segments = val.split(".");
+        const lastSegment = segments[segments.length - 1];
+        if (
+            (e.key >= "0" && e.key <= "9") &&
+            lastSegment.length === 3 &&
+            segments.length < 4 &&
+            !val.endsWith(".")
+        ) {
+            this.value = val + ".";
+        }
+    });
 }
 
 init();
