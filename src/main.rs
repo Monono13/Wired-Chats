@@ -10,14 +10,33 @@ use tokio::net::{TcpListener, TcpStream, tcp::OwnedWriteHalf, tcp::OwnedReadHalf
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use serde_json::json;
-
-
-
+use rusqlite::{Connection, Result};
+use std::fs::File;
+use std::io::Write;
+use dirs;
 
 const PORT: &str = "3333";
 const STORAGE_FOLDER: &str = "received_files";
 
+fn init_db() -> Result<()> {
+    let conn = Connection::open("chat.db")?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip TEXT NOT NULL,
+            username TEXT NOT NULL,
+            message TEXT NOT NULL,
+            is_file INTEGER NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )",
+        [],
+    )?;
+    Ok(())
+}
+
 fn main() {
+    init_db().expect("No se pudo inicializar la base de datos");
+
     let rt = Runtime::new().expect("Failed to create Tokio runtime");
 
     // Crear carpeta para archivos recibidos
@@ -40,7 +59,10 @@ fn main() {
             client_connect,
             send,
             send_file,
-            switch_connection
+            switch_connection,
+            get_messages,
+            save_file,
+            download_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -89,6 +111,7 @@ async fn server_listen<'a>(
 
                     let msg = Message {
                         first_connect: true,
+                        ip: addr.ip().to_string(),
                         username: username_clone.clone(),
                         message: format!("{} connected", username_clone.clone()),
                         is_file: false,
@@ -117,9 +140,6 @@ async fn server_listen<'a>(
     Ok(())
 }
 
-
-
-
 #[tauri::command]
 fn client_connect(app: AppHandle, state: State<AppState>, host: String, username: String, ip: String) {
     let rt = state.rt.clone();
@@ -144,6 +164,7 @@ fn client_connect(app: AppHandle, state: State<AppState>, host: String, username
 
                 let msg = Message {
                     first_connect: true,
+                    ip: ip.clone(),
                     username: username.clone(),
                     message: format!("{} connected", username.clone()),
                     is_file: false,
@@ -168,43 +189,63 @@ fn client_connect(app: AppHandle, state: State<AppState>, host: String, username
     });
 }
 
-
 #[tauri::command(rename_all = "snake_case")]
-fn send(state: State<AppState>, message: String, is_file: bool) {
+fn send(state: State<AppState>,ip: String, message: String, is_file: bool) {
     let rt = state.rt.clone();
     let username = state.username.clone();
     let connection = state.connection.clone();
 
     rt.spawn(async move {
         let username = username.lock().await.clone();
+
+        // Definimos msg aquí para que esté visible en todo el async
+        let msg = Message {
+            first_connect: false,
+            ip: ip.clone(),
+            username: username.clone(),
+            message: message.clone(),
+            is_file,
+        };
+
+        // Enviamos mensaje si hay conexión
         let mut conn_lock = connection.lock().await;
-
         if let Some(stream) = conn_lock.as_mut() {
-            let msg = Message {
-                first_connect: false,
-                username,
-                message,
-                is_file,
-            };
-
             let payload = serde_json::to_string(&msg).unwrap();
             let data = format!("{:010}{}", payload.len(), payload);
 
             let mut write_half = stream.lock().await;
-            let _ = write_half.write_all(data.as_bytes()).await;
+            if let Err(e) = write_half.write_all(data.as_bytes()).await {
+                eprintln!("[SEND] Error enviando datos: {}", e);
+            }
         } else {
             eprintln!("[SEND] No hay conexión activa");
         }
 
+        // Guardamos el mensaje en SQLite (si la base está accesible)
+        // Esto puede ser un unwrap o manejar el error mejor
+        match Connection::open("chat.db") {
+            Ok(conn) => {
+                let res = conn.execute(
+                    "INSERT INTO messages (ip, username, message, is_file) VALUES (?1, ?2, ?3, ?4)",
+                    (&ip, &username, &message, is_file as i32),
+                );
+                if let Err(e) = res {
+                    eprintln!("[SQLITE] Error insertando mensaje: {}", e);
+                }
+            }
+            Err(e) => {
+                eprintln!("[SQLITE] No se pudo abrir la base de datos: {}", e);
+            }
+        }
     });
 }
-
 
 #[tauri::command]
 fn send_file(state: State<AppState>) {
     let rt = state.rt.clone();
     let connection = state.connection.clone();
     let username = state.username.clone();
+    let current_ip = state.current_ip.clone(); // no hacemos lock aquí
 
     rt.spawn(async move {
         let file_path = match rfd::FileDialog::new().pick_file() {
@@ -216,6 +257,8 @@ fn send_file(state: State<AppState>) {
         };
 
         let username = username.lock().await.clone();
+        let ip = current_ip.lock().await.clone().expect("No hay IP activa");
+
         let file_name = file_path
             .file_name()
             .unwrap_or_default()
@@ -240,6 +283,7 @@ fn send_file(state: State<AppState>) {
 
         let msg = Message {
             first_connect: false,
+            ip,
             username,
             message: format!("{}|{}", file_name, encoded),
             is_file: true,
@@ -259,10 +303,32 @@ fn send_file(state: State<AppState>) {
         } else {
             eprintln!("[FILE] No hay conexión activa para enviar el archivo");
         }
-
     });
 }
 
+#[tauri::command]
+fn save_file(file_name: String, base64_data: String) -> Result<String, String> {
+    let decoded = base64::decode(&base64_data).map_err(|e| e.to_string())?;
+    let path = std::path::Path::new(STORAGE_FOLDER).join(&file_name);
+
+    let mut file = File::create(&path).map_err(|e| e.to_string())?;
+    file.write_all(&decoded).map_err(|e| e.to_string())?;
+
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn download_file(file_name: String, base64_data: String) -> Result<String, String> {
+    let decoded = base64::decode(&base64_data).map_err(|e| e.to_string())?;
+    
+    let download_dir = dirs::download_dir().ok_or("No se pudo obtener carpeta de descargas")?;
+    let path = download_dir.join(&file_name);
+
+    let mut file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    file.write_all(&decoded).map_err(|e| e.to_string())?;
+
+    Ok(path.to_string_lossy().to_string())
+}
 
 #[tauri::command]
 async fn switch_connection(
@@ -310,13 +376,41 @@ async fn switch_connection(
     }
 }
 
+#[tauri::command]
+fn get_messages() -> Vec<Message> {
+    let conn = Connection::open("chat.db").unwrap();
 
+    let mut stmt = conn
+        .prepare("SELECT ip, username, message, is_file FROM messages ORDER BY timestamp ASC")
+        .unwrap();
 
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Message {
+                first_connect: false,
+                ip: row.get(0)?,
+                username: row.get(1)?,
+                message: row.get(2)?,
+                is_file: row.get::<_, i32>(3)? != 0,
+            })
+        })
+        .unwrap();
 
+    rows.filter_map(|r| r.ok()).collect()
+}
 
 fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, ip: String) {
     tokio::spawn(async move {
         let peer_ip = stream.peer_addr().ok().map(|addr| addr.ip().to_string());
+
+        // Abrimos la conexión a la base una sola vez para el reader
+        let conn = match Connection::open("chat.db") {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[SQLITE] Error abriendo DB en reader: {}", e);
+                return; // No continuamos si falla abrir DB
+            }
+        };
 
         loop {
             let mut len_buf = [0u8; 10];
@@ -348,6 +442,18 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, ip: String) {
             let msg_str = String::from_utf8_lossy(&data).to_string();
             println!("[RECEIVED] {}", msg_str);
 
+            // Intentamos parsear el mensaje JSON para guardar en DB
+            match serde_json::from_str::<Message>(&msg_str) {
+                Ok(msg) => {
+                    let res = conn.execute(
+                        "INSERT INTO messages (ip, username, message, is_file) VALUES (?1, ?2, ?3, ?4)",
+                        (&msg.ip, &msg.username, &msg.message, msg.is_file as i32),
+                    );
+                }
+                Err(e) => eprintln!("[PARSE] Error parseando mensaje: {}", e),
+            }
+
+
             if let Some(ip) = &peer_ip {
                 let payload = json!({
                     "ip": ip,
@@ -363,8 +469,6 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, ip: String) {
     });
 }
 
-
-
 #[derive(Clone)]
 struct AppState {
     streams: Arc<Mutex<Vec<Arc<Mutex<OwnedWriteHalf>>>>>,
@@ -378,6 +482,7 @@ struct AppState {
 #[derive(Serialize, serde::Deserialize)]
 struct Message {
     first_connect: bool,
+    ip: String,
     username: String,
     message: String,
     is_file: bool,

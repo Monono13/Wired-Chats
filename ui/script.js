@@ -7,31 +7,25 @@ let chats = {}; // Objeto para almacenar mensajes por IP
 
 async function join() {
     let username = document.getElementById("username").value.trim();
-
     if (!username) {
         alert("Please enter a username");
         return;
     }
 
-    currentUsername = username; // Guardar username globalmente
-
+    currentUsername = username;
     await invoke("server_listen", { username: username });
 
     document.querySelector("#screen1").classList.replace("screen-visible", "screen-hidden");
     document.querySelector("#screen2").classList.replace("screen-hidden", "screen-visible");
-
     document.getElementById("connected_username").innerText = "Chatting as " + username;
 }
 
-
 async function connectToPeer(ip, username) {
     await invoke("client_connect", { host: ip, username: username });
-
     if (!chats[ip]) {
         chats[ip] = [];
         addChatToSidebar(ip);
     }
-
     currentChatIp = ip;
     loadChatMessages(ip);
 }
@@ -54,9 +48,9 @@ function loadChatMessages(ip) {
 async function switchChat(ip) {
     currentChatIp = ip;
     document.getElementById("connected_username").innerText = "Conectado a " + ip;
+
     loadChatMessages(ip);
 
-    // Aquí agregamos la llamada al backend para cambiar la conexión activa
     if (currentUsername) {
         try {
             await invoke("switch_connection", {
@@ -72,7 +66,6 @@ async function switchChat(ip) {
 }
 
 function addChat() {
-    // Esta función ahora simplemente enfoca el input de IP
     const input = document.getElementById("new_chat_ip");
     input.focus();
 }
@@ -121,29 +114,53 @@ async function send() {
     messages.appendChild(msgElement);
     messages.scrollTop = messages.scrollHeight;
 
-    await invoke("send", { message: message, is_file: false, ip:currentChatIp });
+    await invoke("send", { message: message, is_file: false, ip: currentChatIp });
     document.getElementById("message").value = "";
 }
 
 async function send_file() {
+    if (!currentChatIp) {
+        alert("No hay chat seleccionado para enviar el archivo.");
+        return;
+    }
     await invoke("send_file");
 }
 
-function createMessage(message, className) {
+// Guarda archivo recibido en received_files
+async function saveReceivedFile(fileName, base64Data) {
+    try {
+        const savedPath = await invoke("save_file", { fileName, base64Data });
+        console.log("Archivo guardado en received_files:", savedPath);
+        return savedPath;
+    } catch (error) {
+        console.error("Error al guardar archivo:", error);
+        alert("No se pudo guardar el archivo.");
+        throw error;
+    }
+}
+
+function createMessage(message, className, extraContent = null) {
     let container = document.createElement("div");
     className.split(" ").forEach(cls => container.classList.add(cls));
 
     let dateParts = new Date().toLocaleTimeString().split(":");
-    let pre = document.createElement("pre");
-    pre.innerHTML = message;
-    pre.dataset.time = `${dateParts[0]}:${dateParts[1]}`;
 
-    container.appendChild(pre);
+    if (message) {
+        let pre = document.createElement("pre");
+        pre.innerHTML = message;
+        pre.dataset.time = `${dateParts[0]}:${dateParts[1]}`;
+        container.appendChild(pre);
+    }
+
+    if (extraContent) {
+        container.appendChild(extraContent);
+    }
+
     return container;
 }
 
 async function init() {
-    await listen("message", (event) => {
+    await listen("message", async (event) => {
         const { ip, message } = event.payload;
         let msg;
 
@@ -160,16 +177,29 @@ async function init() {
         }
 
         let msgElement;
+
         if (msg.is_file) {
             const [fileName, base64Data] = msg.message.split("|");
+
+            // Guardar automáticamente
+            saveReceivedFile(fileName, base64Data).catch(console.error);
+
+            // Crear enlace para descargar en carpeta de descargas
             const link = document.createElement("a");
-            link.href = "data:application/octet-stream;base64," + base64Data;
-            link.download = fileName;
+            link.href = "#";
             link.innerText = fileName;
             link.classList.add("file");
+            link.onclick = async () => {
+                try {
+                    const path = await invoke("download_file", { fileName, base64Data });
+                    alert("Archivo descargado en: " + path);
+                } catch (err) {
+                    console.error("Error descargando archivo:", err);
+                    alert("No se pudo descargar el archivo");
+                }
+            };
 
-            msgElement = createMessage("", "receiver");
-            msgElement.appendChild(link);
+            msgElement = createMessage("", "receiver", link);
         } else {
             msgElement = createMessage(msg.message, "receiver");
         }
@@ -177,51 +207,86 @@ async function init() {
         chats[ip].push(msgElement);
 
         if (currentChatIp === ip) {
-            document.getElementById("messages").appendChild(msgElement);
-            document.getElementById("messages").scrollTop = document.getElementById("messages").scrollHeight;
-        } else {
-            console.log(`Mensaje recibido de ${ip}, pero no está seleccionado.`);
+            const messages = document.getElementById("messages");
+            messages.appendChild(msgElement);
+            messages.scrollTop = messages.scrollHeight;
         }
     });
 
-    // ⬇️ Aquí agregas el input mask para la IP
     const ipInput = document.getElementById("new_chat_ip");
-
     ipInput.addEventListener("input", function (e) {
-        // Eliminar todo lo que no sea dígito ni punto
         let value = e.target.value.replace(/[^\d.]/g, "");
-
-        // Evitar que haya más de 3 puntos
         const parts = value.split(".");
-        if (parts.length > 4) {
-            parts.length = 4; // cortar a 4 partes máximo
-        }
-
-        // Validar que cada parte no tenga más de 3 dígitos
+        if (parts.length > 4) parts.length = 4;
         for (let i = 0; i < parts.length; i++) {
-            if (parts[i].length > 3) {
-                parts[i] = parts[i].slice(0, 3);
-            }
+            if (parts[i].length > 3) parts[i] = parts[i].slice(0, 3);
         }
-
-        // Reconstruir valor con puntos
         e.target.value = parts.join(".");
     });
 
-    // (Opcional) Auto-agregar punto si el último segmento tiene 3 dígitos y no hay 4 segmentos
     ipInput.addEventListener("keyup", function (e) {
         const val = this.value;
         const segments = val.split(".");
         const lastSegment = segments[segments.length - 1];
-        if (
-            (e.key >= "0" && e.key <= "9") &&
+        if ((e.key >= "0" && e.key <= "9") &&
             lastSegment.length === 3 &&
             segments.length < 4 &&
-            !val.endsWith(".")
-        ) {
+            !val.endsWith(".")) {
             this.value = val + ".";
         }
     });
 }
 
+async function loadSavedMessages() {
+    const savedMessages = await invoke("get_messages");
+
+    for (const msg of savedMessages) {
+        const ip = msg.ip;
+
+        if (!chats[ip]) {
+            chats[ip] = [];
+            addChatToSidebar(ip);
+        }
+
+        let msgElement;
+
+        if (msg.is_file) {
+            const [fileName, base64Data] = msg.message.split("|");
+
+            // Guardar automáticamente
+            saveReceivedFile(fileName, base64Data).catch(console.error);
+
+            const link = document.createElement("a");
+            link.href = "#";
+            link.innerText = fileName;
+            link.classList.add("file");
+            link.onclick = async () => {
+                try {
+                    const path = await invoke("download_file", { fileName, base64Data });
+                    alert("Archivo descargado en: " + path);
+                } catch (err) {
+                    console.error("Error descargando archivo:", err);
+                    alert("No se pudo descargar el archivo");
+                }
+            };
+
+            msgElement = createMessage("", "receiver", link);
+        } else {
+            msgElement = createMessage(msg.message, "receiver");
+        }
+
+        chats[ip].push(msgElement);
+    }
+
+    if (currentChatIp) {
+        loadChatMessages(currentChatIp);
+    } else {
+        const ips = Object.keys(chats);
+        if (ips.length > 0) switchChat(ips[0]);
+    }
+}
+
 init();
+loadSavedMessages();
+
+

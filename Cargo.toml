@@ -21,6 +21,9 @@ tauri = { version = "2", features = [] }
 tokio = { version = "1.37", features = ["full"] }
 rfd = "0.14"
 base64 = "0.21"
+rusqlite = { version = "0.31", features = ["bundled"] }
+tauri-utils = "2.6.0"
+dirs = "4"
 
 
 [features]
