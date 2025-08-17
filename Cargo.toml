@@ -24,7 +24,9 @@ base64 = "0.21"
 rusqlite = { version = "0.31", features = ["bundled"] }
 tauri-utils = "2.6.0"
 dirs = "4"
-
+aes-gcm = "0.10"  
+rand = "0.8" 
+sha2 = "0.10"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem and the built-in dev server is disabled.

@@ -14,9 +14,13 @@ use rusqlite::{Connection, Result};
 use std::fs::File;
 use std::io::Write;
 use dirs;
+use aes_gcm::{aead::{Aead, KeyInit},Aes256Gcm, Nonce};
+use rand::{rngs::OsRng, RngCore};
+use sha2::{Digest, Sha256};
 
 const PORT: &str = "3333";
 const STORAGE_FOLDER: &str = "received_files";
+const  PASSPHRASE: &str = "LetsL@ve-W1R3dCh4T5";
 
 fn init_db() -> Result<()> {
     let conn = Connection::open("chat.db")?;
@@ -32,6 +36,49 @@ fn init_db() -> Result<()> {
         [],
     )?;
     Ok(())
+}
+
+fn make_cipher() -> Aes256Gcm {
+    // Derivamos 32 bytes desde el passphrase
+    let key_hash = Sha256::digest(PASSPHRASE.as_bytes());
+    let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&key_hash); // 32 bytes
+    Aes256Gcm::new(key)
+}
+
+/// Cifra bytes → devuelve base64(nonce(12B) || ciphertext)
+fn encrypt_to_b64(plaintext: &[u8]) -> Result<String, String> {
+    let cipher = make_cipher();
+
+    // Nonce de 12 bytes (único por mensaje)
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher.encrypt(nonce, plaintext)
+        .map_err(|e| format!("encrypt error: {e}"))?;
+
+    // Concatenamos nonce || ciphertext y lo base64-izamos
+    let mut out = Vec::with_capacity(12 + ciphertext.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+
+    Ok(base64::encode(out))
+}
+
+/// Recibe base64(nonce||ciphertext) → devuelve bytes en claro
+fn decrypt_from_b64(b64: &str) -> Result<Vec<u8>, String> {
+    let cipher = make_cipher();
+
+    let raw = base64::decode(b64).map_err(|e| format!("base64 decode: {e}"))?;
+    if raw.len() < 12 {
+        return Err("ciphertext too short".into());
+    }
+    let (nonce_bytes, ct) = raw.split_at(12);
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    let plaintext = cipher.decrypt(nonce, ct)
+        .map_err(|e| format!("decrypt error: {e}"))?;
+    Ok(plaintext)
 }
 
 fn main() {
@@ -118,13 +165,18 @@ async fn server_listen<'a>(
                     };
 
                     let payload = serde_json::to_string(&msg).unwrap();
+                    let enc = match encrypt_to_b64(payload.as_bytes()) {
+                        Ok(s) => s,
+                        Err(e) => { eprintln!("[ENC HELLO] {e}"); return; }
+                    };
+                    
 
                     {
                         let conn = state_connection.lock().await;
                         if let Some(writer_arc) = &*conn {
                             let mut writer = writer_arc.lock().await;
                             let _ = writer
-                                .write_all(format!("{:010}{}", payload.len(), payload).as_bytes())
+                                .write_all(format!("{:010}{}", enc.len(), enc).as_bytes())
                                 .await;
                         }
                     }
@@ -171,12 +223,17 @@ fn client_connect(app: AppHandle, state: State<AppState>, host: String, username
                 };
 
                 let payload = serde_json::to_string(&msg).unwrap();
+                let enc = match encrypt_to_b64(payload.as_bytes()) {
+                    Ok(s) => s,
+                    Err(e) => { eprintln!("[ENC HELLO] {e}"); return; }
+                };
+
                 {
                     let mut conn_lock = state_connection.lock().await;
                     if let Some(conn) = conn_lock.as_mut() {
                         let mut write_half = conn.lock().await;
                         let _ = write_half
-                            .write_all(format!("{:010}{}", payload.len(), payload).as_bytes())
+                            .write_all(format!("{:010}{}", enc.len(), enc).as_bytes())
                             .await;
                     }
 
@@ -208,11 +265,16 @@ fn send(state: State<AppState>,ip: String, message: String, is_file: bool) {
         };
 
         // Enviamos mensaje si hay conexión
+        let payload = serde_json::to_string(&msg).unwrap();
+        // 🔐 Cifrar
+        let enc = match encrypt_to_b64(payload.as_bytes()) {
+            Ok(s) => s,
+            Err(e) => { eprintln!("[ENC] {e}"); return; }
+        };
+        let data = format!("{:010}{}", enc.len(), enc);
+
         let mut conn_lock = connection.lock().await;
         if let Some(stream) = conn_lock.as_mut() {
-            let payload = serde_json::to_string(&msg).unwrap();
-            let data = format!("{:010}{}", payload.len(), payload);
-
             let mut write_half = stream.lock().await;
             if let Err(e) = write_half.write_all(data.as_bytes()).await {
                 eprintln!("[SEND] Error enviando datos: {}", e);
@@ -239,6 +301,7 @@ fn send(state: State<AppState>,ip: String, message: String, is_file: bool) {
         }
     });
 }
+
 
 #[tauri::command]
 fn send_file(state: State<AppState>) {
@@ -290,7 +353,11 @@ fn send_file(state: State<AppState>) {
         };
 
         let payload = serde_json::to_string(&msg).unwrap();
-        let data = format!("{:010}{}", payload.len(), payload);
+        let enc = match encrypt_to_b64(payload.as_bytes()) {
+            Ok(s) => s,
+            Err(e) => { eprintln!("[ENC FILE] {e}"); return; }
+        };
+        let data = format!("{:010}{}", enc.len(), enc);
 
         let mut conn_lock = connection.lock().await;
         if let Some(stream) = conn_lock.as_mut() {
@@ -305,6 +372,7 @@ fn send_file(state: State<AppState>) {
         }
     });
 }
+
 
 #[tauri::command]
 fn save_file(file_name: String, base64_data: String) -> Result<String, String> {
@@ -399,7 +467,7 @@ fn get_messages() -> Vec<Message> {
     rows.filter_map(|r| r.ok()).collect()
 }
 
-fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, ip: String) {
+fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, _ip: String) {
     tokio::spawn(async move {
         let peer_ip = stream.peer_addr().ok().map(|addr| addr.ip().to_string());
 
@@ -439,13 +507,32 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, ip: String) {
                 break;
             }
 
-            let msg_str = String::from_utf8_lossy(&data).to_string();
-            println!("[RECEIVED] {}", msg_str);
+            // `data` contiene la cadena base64 cifrada (no JSON)
+            let enc_b64 = String::from_utf8_lossy(&data).to_string();
+
+            // 🔓 Descifrar a bytes
+            let plain = match decrypt_from_b64(&enc_b64) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("[DEC] {e}");
+                    continue;
+                }
+            };
+
+            // Convertimos a String para parsear y para emitir al frontend
+            let msg_str = match String::from_utf8(plain) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[UTF8] {e}");
+                    continue;
+                }
+            };
+            println!("[RECEIVED PLAINTEXT] {}", msg_str);
 
             // Intentamos parsear el mensaje JSON para guardar en DB
             match serde_json::from_str::<Message>(&msg_str) {
                 Ok(msg) => {
-                    let res = conn.execute(
+                    let _ = conn.execute(
                         "INSERT INTO messages (ip, username, message, is_file) VALUES (?1, ?2, ?3, ?4)",
                         (&msg.ip, &msg.username, &msg.message, msg.is_file as i32),
                     );
