@@ -20,6 +20,16 @@ async function join() {
     document.getElementById("connected_username").innerText = "Chatting as " + username;
 }
 
+async function mostrarIpLocal() {
+    try {
+        const ip = await invoke("get_local_ip");
+        document.getElementById("local_ip").innerText = ip;
+    } catch (err) {
+        console.error("Error al obtener IP:", err);
+        document.getElementById("local_ip").innerText = "Error";
+    }
+}
+
 async function connectToPeer(ip, username) {
     await invoke("client_connect", { host: ip, username: username });
     if (!chats[ip]) {
@@ -126,6 +136,44 @@ async function send_file() {
     await invoke("send_file");
 }
 
+// VOICE CHAT
+async function openVoiceChat() {
+    if (!currentChatIp) {
+        alert("No hay un chat seleccionado.");
+        return;
+    }
+
+    // Ocultar screen2 y mostrar screen3
+    document.querySelector("#screen2").classList.replace("screen-visible", "screen-hidden");
+    document.querySelector("#screen3").classList.replace("screen-hidden", "screen-visible");
+
+    // Mostrar con quién se abrió el voice chat
+    document.getElementById("voiceChatPeer").innerText = "Voice Chat con " + currentChatIp;
+
+    // Iniciar la llamada de voz usando Rust
+    try {
+        await invoke("start_voice_call", { peerIp: currentChatIp });
+        console.log("[VOICE] Llamada iniciada con", currentChatIp);
+    } catch (err) {
+        console.error("[VOICE] Error iniciando la llamada:", err);
+        alert("No se pudo iniciar la llamada de voz: " + err);
+    }
+}
+
+async function closeVoiceChat() {
+    // Detener la llamada de voz en Rust
+    try {
+        await invoke("end_voice_call");
+        console.log("[VOICE] Llamada terminada");
+    } catch (err) {
+        console.error("[VOICE] Error terminando la llamada:", err);
+    }
+
+    // Ocultar screen3 y mostrar screen2
+    document.querySelector("#screen3").classList.replace("screen-visible", "screen-hidden");
+    document.querySelector("#screen2").classList.replace("screen-hidden", "screen-visible");
+}
+
 // Guarda archivo recibido en received_files
 async function saveReceivedFile(fileName, base64Data) {
     try {
@@ -212,6 +260,8 @@ async function init() {
             messages.scrollTop = messages.scrollHeight;
         }
     });
+
+    mostrarIpLocal();
 
     const ipInput = document.getElementById("new_chat_ip");
     ipInput.addEventListener("input", function (e) {

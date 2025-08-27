@@ -17,6 +17,10 @@ use dirs;
 use aes_gcm::{aead::{Aead, KeyInit},Aes256Gcm, Nonce};
 use rand::{rngs::OsRng, RngCore};
 use sha2::{Digest, Sha256};
+use tokio::net::UdpSocket;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::sync::{atomic::{AtomicBool, Ordering}};
+use local_ip_address::local_ip;
 
 const PORT: &str = "3333";
 const STORAGE_FOLDER: &str = "received_files";
@@ -36,6 +40,16 @@ fn init_db() -> Result<()> {
         [],
     )?;
     Ok(())
+}
+
+
+// remember to call `.manage(MyState::default())`
+#[tauri::command]
+async fn get_local_ip() -> Result<String, String> {
+    match local_ip() {
+        Ok(ip) => Ok(ip.to_string()),
+        Err(e) => Err(format!("No se pudo obtener la IP local: {}", e)),
+    }
 }
 
 fn make_cipher() -> Aes256Gcm {
@@ -100,6 +114,8 @@ fn main() {
             connection: Arc::new(Mutex::new(None)),
             current_ip: Arc::new(Mutex::new(None)),
             ips: Arc::new(Mutex::new(Vec::new())),
+            VoiceCall: Arc::new(Mutex::new(None)),
+            
         })
         .invoke_handler(tauri::generate_handler![
             server_listen,
@@ -110,6 +126,9 @@ fn main() {
             get_messages,
             save_file,
             download_file,
+            start_voice_call,
+            end_voice_call,
+            get_local_ip,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -373,6 +392,140 @@ fn send_file(state: State<AppState>) {
     });
 }
 
+// VOICE CHAT
+// Estructura que guarda la llamada activa
+struct VoiceCallState {
+    running: Arc<AtomicBool>,
+}
+
+#[tauri::command]
+async fn start_voice_call(
+    state: State<'_, AppState>,
+    peer_ip: String,
+) -> Result<(), String> {
+    use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+    use std::thread;
+    use std::net::UdpSocket;
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+    // Flag de control
+    let running = Arc::new(AtomicBool::new(true));
+
+    // Guardar en estado global para detener después
+    let mut voice_call = state.VoiceCall.lock().await;
+    *voice_call = Some(VoiceCallState { running: running.clone() });
+    drop(voice_call);
+
+    // Clonar flag y peer IP
+    let r_flag = running.clone();
+    let peer_ip_clone = peer_ip.clone();
+
+    // Hilo principal de la llamada
+    thread::spawn(move || {
+        let host = cpal::default_host();
+
+        // --- Dispositivos de entrada y salida ---
+        let input = host.default_input_device()
+            .or_else(|| host.input_devices().ok().and_then(|mut d| d.next()))
+            .expect("No se encontró dispositivo de entrada");
+        let output = host.default_output_device()
+            .or_else(|| host.output_devices().ok().and_then(|mut d| d.next()))
+            .expect("No se encontró dispositivo de salida");
+
+        let config_input = input.default_input_config().unwrap();
+        let config_output = output.default_output_config().unwrap();
+
+        // --- Puertos cruzados según SO ---
+        let (local_port, peer_port) = if cfg!(target_os = "windows") {
+            (5001, 5000)
+        } else {
+            (5000, 5001)
+        };
+
+        // --- Socket UDP ---
+        let socket = UdpSocket::bind(("0.0.0.0", local_port)).unwrap();
+        socket.set_nonblocking(true).unwrap();
+
+        // --- Buffer compartido para recepción ---
+        let audio_buffer: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
+        let buffer_clone = audio_buffer.clone();
+        let r_flag_recv = r_flag.clone();
+        let socket_recv = socket.try_clone().unwrap();
+
+        // Hilo dedicado a recibir paquetes UDP
+        thread::spawn(move || {
+            let mut recv_buf = [0u8; 32768];
+            while r_flag_recv.load(Ordering::SeqCst) {
+                if let Ok((size, _src)) = socket_recv.recv_from(&mut recv_buf) {
+                    let pcm: &[i16] = bytemuck::cast_slice(&recv_buf[..size]);
+                    let mut buf = buffer_clone.lock().unwrap();
+                    buf.clear();
+                    buf.extend_from_slice(pcm);
+                } else {
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        });
+
+        // --- Stream de entrada (mic -> red) ---
+        let socket_in = socket.try_clone().unwrap();
+        let r_flag_in = r_flag.clone();
+        let peer_ip_in = peer_ip_clone.clone();
+        let input_stream = input.build_input_stream(
+            &config_input.into(),
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                if r_flag_in.load(Ordering::SeqCst) {
+                    let pcm: Vec<i16> = data.iter().map(|&x| (x * i16::MAX as f32) as i16).collect();
+                    let bytes: &[u8] = bytemuck::cast_slice(&pcm);
+                    let _ = socket_in.send_to(bytes, (peer_ip_in.as_str(), peer_port));
+                }
+            },
+            move |err| eprintln!("Input error: {err}"),
+            None
+        ).unwrap();
+
+        // --- Stream de salida (buffer -> parlantes) ---
+        let r_flag_out = r_flag.clone();
+        let output_stream = output.build_output_stream(
+            &config_output.into(),
+            move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                if r_flag_out.load(Ordering::SeqCst) {
+                    let buf = audio_buffer.lock().unwrap();
+                    for (o, &s) in output.iter_mut().zip(buf.iter()) {
+                        *o = s as f32 / i16::MAX as f32;
+                    }
+                }
+            },
+            move |err| eprintln!("Output error: {err}"),
+            None
+        ).unwrap();
+
+        // Activar streams
+        input_stream.play().unwrap();
+        output_stream.play().unwrap();
+
+        // Mantener vivo mientras esté en llamada
+        while r_flag.load(Ordering::SeqCst) {
+            thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
+
+    println!("[VOICE] Llamada iniciada con {}", peer_ip);
+    Ok(())
+}
+
+
+#[tauri::command]
+async fn end_voice_call(state: State<'_, AppState>) -> Result<(), String> {
+    let mut voice_call = state.VoiceCall.lock().await;
+    if let Some(vc) = voice_call.take() {
+        vc.running.store(false, Ordering::SeqCst);
+    }
+    println!("[VOICE] Llamada terminada");
+    Ok(())
+}
+
+
 
 #[tauri::command]
 fn save_file(file_name: String, base64_data: String) -> Result<String, String> {
@@ -564,6 +717,8 @@ struct AppState {
     connection: Arc<Mutex<Option<Arc<Mutex<OwnedWriteHalf>>>>>,
     current_ip: Arc<Mutex<Option<String>>>,
     ips: Arc<Mutex<Vec<String>>>,
+    VoiceCall: Arc<Mutex<Option<VoiceCallState>>>,
+
 }
 
 #[derive(Serialize, serde::Deserialize)]
@@ -573,4 +728,9 @@ struct Message {
     username: String,
     message: String,
     is_file: bool,
+}
+
+struct VoiceCall {
+    peer_ip: String,
+    socket: Arc<UdpSocket>,
 }

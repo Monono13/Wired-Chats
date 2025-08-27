@@ -10,14 +10,16 @@
 
   <!-- Pantalla 1: Inicio -->
   <div class="screen screen-visible" id="screen1">
-    <h2>Welcome to Wired Chat!</h2>
+    <img src="imgs/logo.png" alt="Wired Chats Logo" class="logo" />
+    <h2>Bienvenido a Wired Chat!</h2>
+    <h3>Tu IP Local Es: <span id="local_ip">Detectando...</span></h3>
 
     <div style="margin-bottom: 20px;">
-      <input type="text" id="username" placeholder="Enter your username" />
+      <input type="text" id="username" placeholder="Ingresa tu username" />
     </div>
 
     <div>
-      <button onclick="join()">Start Chat</button>
+      <button onclick="join()">Inicar Chat</button>
     </div>
   </div>
 
@@ -33,7 +35,7 @@
       <div class="add-chat-form">
         <input type="text" id="new_chat_ip" placeholder="IP del nuevo chat" />
         <small id="ip-error" style="color: red; display: none;">IP inválida</small>
-        <button onclick="addChatFromInput()">Agregar</button>
+        <button onclick="addChatFromInput()" class="add-chats">Agregar</button>
       </div>
     </div>
 
@@ -48,21 +50,37 @@
 
           <textarea class="message-area" id="message" rows="1" placeholder="Escribe un mensaje..."></textarea>
 
-          <button onclick="send()" title="Enviar mensaje">
+          <button onclick="send()" title="Enviar mensaje" class="send-button">
             <svg xmlns="http://www.w3.org/2000/svg" height="30px" viewBox="0 -960 960 960" width="30px" fill="#fff" class="send-button">
               <path d="M140-190v-580l688.46 290L140-190Zm60-90 474-200-474-200v147.69L416.92-480 200-427.69V-280Zm0 0v-400 400Z"/>
             </svg>
           </button>
 
           <button onclick="send_file()" title="Enviar archivo" class="file-button">
-            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21.44 11.05a5.5 5.5 0 0 0-7.78 0l-7.66 7.66a4 4 0 0 0 5.66 5.66l6.54-6.54"></path>
-              <path d="M13.5 7.5l3 3L8.5 18l-3-3"></path>
+            <svg width="30px" height="30px" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path
+                fill-rule="evenodd"
+                clip-rule="evenodd"
+                d="M7.50005 1.04999C7.74858 1.04999 7.95005 1.25146 7.95005 1.49999V8.41359L10.1819 6.18179C10.3576 6.00605 10.6425 6.00605 10.8182 6.18179C10.994 6.35753 10.994 6.64245 10.8182 6.81819L7.81825 9.81819C7.64251 9.99392 7.35759 9.99392 7.18185 9.81819L4.18185 6.81819C4.00611 6.64245 4.00611 6.35753 4.18185 6.18179C4.35759 6.00605 4.64251 6.00605 4.81825 6.18179L7.05005 8.41359V1.49999C7.05005 1.25146 7.25152 1.04999 7.50005 1.04999ZM2.5 10C2.77614 10 3 10.2239 3 10.5V12C3 12.5539 3.44565 13 3.99635 13H11.0012C11.5529 13 12 12.5528 12 12V10.5C12 10.2239 12.2239 10 12.5 10C12.7761 10 13 10.2239 13 10.5V12C13 13.1041 12.1062 14 11.0012 14H3.99635C2.89019 14 2 13.103 2 12V10.5C2 10.2239 2.22386 10 2.5 10Z"
+                fill="#fff"
+              />
             </svg>
+          </button>
+          
+          <button onclick="openVoiceChat()" title="VoiceChat" class="voice-button">
+            <svg fill="#fff" width="30px" height="30px" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M19.44,13c-.22,0-.45-.07-.67-.12a9.44,9.44,0,0,1-1.31-.39,2,2,0,0,0-2.48,1l-.22.45a12.18,12.18,0,0,1-2.66-2,12.18,12.18,0,0,1-2-2.66L10.52,9a2,2,0,0,0,1-2.48,10.33,10.33,0,0,1-.39-1.31c-.05-.22-.09-.45-.12-.68a3,3,0,0,0-3-2.49h-3a3,3,0,0,0-3,3.41A19,19,0,0,0,18.53,21.91l.38,0a3,3,0,0,0,2-.76,3,3,0,0,0,1-2.25v-3A3,3,0,0,0,19.44,13Zm.5,6a1,1,0,0,1-.34.75,1.05,1.05,0,0,1-.82.25A17,17,0,0,1,4.07,5.22a1.09,1.09,0,0,1,.25-.82,1,1,0,0,1,.75-.34h3a1,1,0,0,1,1,.79q.06.41.15.81a11.12,11.12,0,0,0,.46,1.55l-1.4.65a1,1,0,0,0-.49,1.33,14.49,14.49,0,0,0,7,7,1,1,0,0,0,.76,0,1,1,0,0,0,.57-.52l.62-1.4a13.69,13.69,0,0,0,1.58.46q.4.09.81.15a1,1,0,0,1,.79,1Z"/></svg>
           </button>
 
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Pantalla 3:  Llamada-->
+  <div class="screen screen-hidden" id="screen3">
+    <div>
+      <h2 id="voiceChatPeer">Ventana Chat de Voz</h2>
+      <button onclick="closeVoiceChat()" class="voice-close-button">Colgar llamada</button>
     </div>
   </div>
 
