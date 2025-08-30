@@ -407,67 +407,57 @@ async fn start_voice_call(
     use std::thread;
     use std::net::UdpSocket;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use std::collections::VecDeque;
 
-    // Flag de control
     let running = Arc::new(AtomicBool::new(true));
 
-    // Guardar en estado global para detener después
     let mut voice_call = state.VoiceCall.lock().await;
     *voice_call = Some(VoiceCallState { running: running.clone() });
     drop(voice_call);
 
-    // Clonar flag y peer IP
     let r_flag = running.clone();
     let peer_ip_clone = peer_ip.clone();
 
-    // Hilo principal de la llamada
     thread::spawn(move || {
         let host = cpal::default_host();
 
-        // --- Dispositivos de entrada y salida ---
-        let input = host.default_input_device()
-            .or_else(|| host.input_devices().ok().and_then(|mut d| d.next()))
-            .expect("No se encontró dispositivo de entrada");
-        let output = host.default_output_device()
-            .or_else(|| host.output_devices().ok().and_then(|mut d| d.next()))
-            .expect("No se encontró dispositivo de salida");
+        let input = host.default_input_device().expect("No input device");
+        let output = host.default_output_device().expect("No output device");
 
         let config_input = input.default_input_config().unwrap();
         let config_output = output.default_output_config().unwrap();
 
-        // --- Puertos cruzados según SO ---
-        let (local_port, peer_port) = if cfg!(target_os = "windows") {
-            (5001, 5000)
-        } else {
-            (5000, 5001)
-        };
+        let local_port = 5000;
+        let peer_port = 5000;
 
-        // --- Socket UDP ---
         let socket = UdpSocket::bind(("0.0.0.0", local_port)).unwrap();
         socket.set_nonblocking(true).unwrap();
 
-        // --- Buffer compartido para recepción ---
-        let audio_buffer: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::new()));
+        // --- Cola para acumular audio ---
+        let audio_buffer: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::with_capacity(48000)));
         let buffer_clone = audio_buffer.clone();
         let r_flag_recv = r_flag.clone();
         let socket_recv = socket.try_clone().unwrap();
 
-        // Hilo dedicado a recibir paquetes UDP
+        // Hilo de recepción UDP
         thread::spawn(move || {
-            let mut recv_buf = [0u8; 32768];
+            let mut recv_buf = [0u8; 4096];
             while r_flag_recv.load(Ordering::SeqCst) {
                 if let Ok((size, _src)) = socket_recv.recv_from(&mut recv_buf) {
                     let pcm: &[i16] = bytemuck::cast_slice(&recv_buf[..size]);
                     let mut buf = buffer_clone.lock().unwrap();
-                    buf.clear();
-                    buf.extend_from_slice(pcm);
+                    for &s in pcm {
+                        if buf.len() < 48000 { // 1s buffer
+                            buf.push_back(s);
+                        }
+                    }
                 } else {
-                    thread::sleep(std::time::Duration::from_millis(10));
+                    thread::sleep(std::time::Duration::from_millis(5));
                 }
             }
         });
 
-        // --- Stream de entrada (mic -> red) ---
+        // --- Entrada: micrófono → UDP ---
         let socket_in = socket.try_clone().unwrap();
         let r_flag_in = r_flag.clone();
         let peer_ip_in = peer_ip_clone.clone();
@@ -484,15 +474,20 @@ async fn start_voice_call(
             None
         ).unwrap();
 
-        // --- Stream de salida (buffer -> parlantes) ---
+        // --- Salida: buffer → parlantes ---
         let r_flag_out = r_flag.clone();
+        let buffer_out = audio_buffer.clone();
         let output_stream = output.build_output_stream(
             &config_output.into(),
             move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 if r_flag_out.load(Ordering::SeqCst) {
-                    let buf = audio_buffer.lock().unwrap();
-                    for (o, &s) in output.iter_mut().zip(buf.iter()) {
-                        *o = s as f32 / i16::MAX as f32;
+                    let mut buf = buffer_out.lock().unwrap();
+                    for o in output.iter_mut() {
+                        if let Some(s) = buf.pop_front() {
+                            *o = s as f32 / i16::MAX as f32;
+                        } else {
+                            *o = 0.0; // silencio si no hay datos
+                        }
                     }
                 }
             },
@@ -500,11 +495,9 @@ async fn start_voice_call(
             None
         ).unwrap();
 
-        // Activar streams
         input_stream.play().unwrap();
         output_stream.play().unwrap();
 
-        // Mantener vivo mientras esté en llamada
         while r_flag.load(Ordering::SeqCst) {
             thread::sleep(std::time::Duration::from_millis(100));
         }
@@ -513,6 +506,7 @@ async fn start_voice_call(
     println!("[VOICE] Llamada iniciada con {}", peer_ip);
     Ok(())
 }
+
 
 
 #[tauri::command]
