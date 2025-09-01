@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use cpal::SampleRate;
+use rand::seq;
 use serde::Serialize;
 use std::sync::Arc;
 use std::fs;
@@ -21,6 +23,8 @@ use tokio::net::UdpSocket;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{atomic::{AtomicBool, Ordering}};
 use local_ip_address::local_ip;
+use std::thread;
+use std::collections::VecDeque;
 
 const PORT: &str = "3333";
 const STORAGE_FOLDER: &str = "received_files";
@@ -392,11 +396,11 @@ fn send_file(state: State<AppState>) {
     });
 }
 
-// VOICE CHAT
-// Estructura que guarda la llamada activa
-struct VoiceCallState {
-    running: Arc<AtomicBool>,
-}
+// VOICE CHAT 
+// Estructura que guarda la llamada activa 
+struct VoiceCallState { 
+    running: Arc<AtomicBool>, 
+} 
 
 #[tauri::command]
 async fn start_voice_call(
@@ -410,7 +414,6 @@ async fn start_voice_call(
     use std::collections::VecDeque;
 
     let running = Arc::new(AtomicBool::new(true));
-
     let mut voice_call = state.VoiceCall.lock().await;
     *voice_call = Some(VoiceCallState { running: running.clone() });
     drop(voice_call);
@@ -420,22 +423,23 @@ async fn start_voice_call(
 
     thread::spawn(move || {
         let host = cpal::default_host();
-
         let input = host.default_input_device().expect("No input device");
         let output = host.default_output_device().expect("No output device");
-
-        let config_input = input.default_input_config().unwrap();
-        let config_output = output.default_output_config().unwrap();
+        
+        let mut config_input = input.default_input_config().unwrap().config();
+        config_input.sample_rate = SampleRate(44100);
+        let mut config_output = output.default_output_config().unwrap().config();
+        config_output.sample_rate = SampleRate(44100);
 
         let local_port = 5000;
         let peer_port = 5000;
-
         let socket = UdpSocket::bind(("0.0.0.0", local_port)).unwrap();
         socket.set_nonblocking(true).unwrap();
 
         // --- Cola para acumular audio ---
-        let audio_buffer: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::with_capacity(48000)));
+        let audio_buffer: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::new()));
         let buffer_clone = audio_buffer.clone();
+
         let r_flag_recv = r_flag.clone();
         let socket_recv = socket.try_clone().unwrap();
 
@@ -447,12 +451,10 @@ async fn start_voice_call(
                     let pcm: &[i16] = bytemuck::cast_slice(&recv_buf[..size]);
                     let mut buf = buffer_clone.lock().unwrap();
                     for &s in pcm {
-                        if buf.len() < 48000 { // 1s buffer
-                            buf.push_back(s);
-                        }
+                        buf.push_back(s);
                     }
                 } else {
-                    thread::sleep(std::time::Duration::from_millis(5));
+                    thread::sleep(std::time::Duration::from_millis(2));
                 }
             }
         });
@@ -461,11 +463,12 @@ async fn start_voice_call(
         let socket_in = socket.try_clone().unwrap();
         let r_flag_in = r_flag.clone();
         let peer_ip_in = peer_ip_clone.clone();
+
         let input_stream = input.build_input_stream(
             &config_input.into(),
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
                 if r_flag_in.load(Ordering::SeqCst) {
-                    let pcm: Vec<i16> = data.iter().map(|&x| (x * i16::MAX as f32) as i16).collect();
+                    let pcm: Vec<i16> = data.iter().map(|&x| ((x * 0.7).max(-1.0).min(1.0) * i16::MAX as f32) as i16).collect();
                     let bytes: &[u8] = bytemuck::cast_slice(&pcm);
                     let _ = socket_in.send_to(bytes, (peer_ip_in.as_str(), peer_port));
                 }
@@ -477,17 +480,38 @@ async fn start_voice_call(
         // --- Salida: buffer → parlantes ---
         let r_flag_out = r_flag.clone();
         let buffer_out = audio_buffer.clone();
+        let last_sample: Arc<Mutex<Option<i16>>> = Arc::new(Mutex::new(None));
+        let last_sample_clone = last_sample.clone();
+
+        // Variable para el filtro de paso bajo
+        let last_filtered_sample: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
+        let last_filtered_sample_clone = last_filtered_sample.clone();
+
         let output_stream = output.build_output_stream(
             &config_output.into(),
             move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                let mut buf = buffer_out.lock().unwrap();
+                let mut ls = last_sample_clone.lock().unwrap();
+                let mut lfs = last_filtered_sample_clone.lock().unwrap();
+
                 if r_flag_out.load(Ordering::SeqCst) {
-                    let mut buf = buffer_out.lock().unwrap();
                     for o in output.iter_mut() {
-                        if let Some(s) = buf.pop_front() {
-                            *o = s as f32 / i16::MAX as f32;
+                        let current_sample_i16 = if let Some(s) = buf.pop_front() {
+                            *ls = Some(s);
+                            s
+                        } else if let Some(s) = *ls {
+                            s
                         } else {
-                            *o = 0.0; // silencio si no hay datos
-                        }
+                            0
+                        };
+
+                        let current_sample_f32 = current_sample_i16 as f32 / i16::MAX as f32;
+                        
+                        // Aplicar filtro de paso bajo (constante de filtro = 0.5, reduce frecuencias altas)
+                        let filtered_sample = *lfs + 0.5 * (current_sample_f32 - *lfs);
+                        
+                        *o = filtered_sample;
+                        *lfs = filtered_sample;
                     }
                 }
             },
@@ -507,8 +531,6 @@ async fn start_voice_call(
     Ok(())
 }
 
-
-
 #[tauri::command]
 async fn end_voice_call(state: State<'_, AppState>) -> Result<(), String> {
     let mut voice_call = state.VoiceCall.lock().await;
@@ -518,8 +540,6 @@ async fn end_voice_call(state: State<'_, AppState>) -> Result<(), String> {
     println!("[VOICE] Llamada terminada");
     Ok(())
 }
-
-
 
 #[tauri::command]
 fn save_file(file_name: String, base64_data: String) -> Result<String, String> {
