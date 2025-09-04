@@ -250,7 +250,7 @@ fn client_connect(app: AppHandle, state: State<AppState>, host: String, username
                     first_connect: true,
                     ip: ip.clone(),
                     username: username.clone(),
-                    message: format!(""),
+                    message: format!("test"),
                     is_file: false,
                 };
 
@@ -271,7 +271,12 @@ fn client_connect(app: AppHandle, state: State<AppState>, host: String, username
 
                 }
 
-                let _ = app.emit("connection_status", true);
+                let payload = serde_json::json!({
+                    "ip": ip.clone(),
+                    "username": null,
+                    "connected": true
+                });
+                let _ = app.emit("connection_status", payload);
 
                 start_reader(app, read_half, ip);
             }
@@ -614,6 +619,15 @@ async fn switch_connection(
             *connection_lock = Some(Arc::new(Mutex::new(write_half)));
             *current_ip_lock = Some(ip.clone());
 
+            let payload = serde_json::json!({
+                "ip": ip.clone(),
+                "username": null,
+                "connected": true
+            });
+            let _ = app.emit("connection_status", payload);
+
+            println!("[SWITCH] Conectado a {}", ip);
+
             println!("[SWITCH] Conectado a {}", ip);
 
             // Inicia el listener con la nueva conexión
@@ -623,6 +637,12 @@ async fn switch_connection(
         }
         Err(e) => {
             eprintln!("[SWITCH] Falló la conexión: {}", e);
+            let payload = serde_json::json!({
+                "ip": ip.clone(),
+                "username": null,
+                "connected": false
+            });
+            let _ = app.emit("connection_status", payload);
             Err(format!("No se pudo conectar a {}: {}", addr, e))
         }
     }
@@ -655,12 +675,11 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, _ip: String) {
     tokio::spawn(async move {
         let peer_ip = stream.peer_addr().ok().map(|addr| addr.ip().to_string());
 
-        // Abrimos la conexión a la base una sola vez para el reader
         let conn = match Connection::open("chat.db") {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[SQLITE] Error abriendo DB en reader: {}", e);
-                return; // No continuamos si falla abrir DB
+                return;
             }
         };
 
@@ -691,10 +710,8 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, _ip: String) {
                 break;
             }
 
-            // `data` contiene la cadena base64 cifrada (no JSON)
             let enc_b64 = String::from_utf8_lossy(&data).to_string();
 
-            // 🔓 Descifrar a bytes
             let plain = match decrypt_from_b64(&enc_b64) {
                 Ok(p) => p,
                 Err(e) => {
@@ -703,7 +720,6 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, _ip: String) {
                 }
             };
 
-            // Convertimos a String para parsear y para emitir al frontend
             let msg_str = match String::from_utf8(plain) {
                 Ok(s) => s,
                 Err(e) => {
@@ -713,9 +729,22 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, _ip: String) {
             };
             println!("[RECEIVED PLAINTEXT] {}", msg_str);
 
-            // Intentamos parsear el mensaje JSON para guardar en DB
             match serde_json::from_str::<Message>(&msg_str) {
                 Ok(msg) => {
+                    // Si es el primer mensaje de conexión, emitimos el evento con el nombre de usuario
+                    if msg.first_connect {
+                        let payload = serde_json::json!({
+                            "ip": msg.ip,
+                            "username": msg.username,
+                            "connected": true
+                        });
+                        if let Err(e) = app.emit("connection_status", payload) {
+                            eprintln!("[EMIT] Error al emitir estado de conexión: {}", e);
+                        }
+                        // Saltamos el resto del bucle para no procesar el mensaje como uno normal
+                        continue;
+                    }
+
                     let _ = conn.execute(
                         "INSERT INTO messages (ip, username, message, is_file) VALUES (?1, ?2, ?3, ?4)",
                         (&msg.ip, &msg.username, &msg.message, msg.is_file as i32),
@@ -726,7 +755,7 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, _ip: String) {
 
 
             if let Some(ip) = &peer_ip {
-                let payload = json!({
+                let payload = serde_json::json!({
                     "ip": ip,
                     "message": msg_str
                 });
@@ -739,7 +768,14 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, _ip: String) {
         println!("[READER] Terminó la conexión del peer.");
 
         let app_handle = app.clone();
-        let _ = app_handle.emit("connection_status", false);
+        if let Some(ip) = &peer_ip {
+             let payload = serde_json::json!({
+                "ip": ip,
+                "username": null,
+                "connected": false
+            });
+            let _ = app_handle.emit("connection_status", payload);
+        }
     });
 }
 

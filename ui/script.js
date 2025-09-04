@@ -89,17 +89,14 @@ async function updateConnectionStatusLoop() {
     }
 }
 
+// Reemplaza tu función switchChat()
 async function switchChat(ip) {
     currentChatIp = ip;
-    document.getElementById("status-text").innerText = "Conectado a " + ip;
-    
-    // Asumimos que la conexión tendrá éxito e inmediatamente cambiamos el color
-    setStatusTextColor(true);
-
     loadChatMessages(ip);
 
     if (currentUsername) {
         try {
+            // Aquí solo invocamos el comando, sin actualizar el estado de UI
             await invoke("switch_connection", {
                 ip: ip,
                 username: currentUsername
@@ -108,9 +105,6 @@ async function switchChat(ip) {
         } catch (err) {
             console.error("[UI] Error al cambiar conexión:", err);
             alert("Error al cambiar de conexión: " + err);
-            
-            // Si la conexión falla, cambiamos el color de nuevo a desconectado
-            setStatusTextColor(false);
         }
     }
 }
@@ -384,8 +378,28 @@ async function init() {
 
     setInterval(updateConnectionStatusLoop, 3000);
 
+    // Reemplaza el listener "connection_status" completo con este código
     listen("connection_status", (event) => {
-        setStatusTextColor(event.payload);
+        const { ip, username, connected } = event.payload;
+        const statusTextElement = document.getElementById("status-text");
+
+        if (statusTextElement) {
+            if (connected) {
+                // Si el backend envió un nombre de usuario, lo usamos
+                if (username) {
+                    statusTextElement.innerText = `Conectado a ${ip} / ${username}`;
+                } else {
+                    // Si no hay nombre, mostramos un estado de "Conectado" sin él
+                    statusTextElement.innerText = `Conectado a ${ip}`;
+                }
+                statusTextElement.classList.remove("status-text-disconnected");
+                statusTextElement.classList.add("status-text-connected");
+            } else {
+                statusTextElement.innerText = `Conectado a ${ip}`;
+                statusTextElement.classList.remove("status-text-connected");
+                statusTextElement.classList.add("status-text-disconnected");
+            }
+        }
     });
 }
 
