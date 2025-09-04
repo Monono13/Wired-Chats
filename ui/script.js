@@ -17,7 +17,7 @@ async function join() {
 
     document.querySelector("#screen1").classList.replace("screen-visible", "screen-hidden");
     document.querySelector("#screen2").classList.replace("screen-hidden", "screen-visible");
-    document.getElementById("connected_username").innerText = "Chatting as " + username;
+    document.getElementById("status-text").innerText = "Chatting as " + username;
 }
 
 async function mostrarIpLocal() {
@@ -55,9 +55,46 @@ function loadChatMessages(ip) {
     }
 }
 
+// Función de ayuda para cambiar el color del texto de estado
+function setStatusTextColor(isConnected) {
+    const statusTextElement = document.getElementById("status-text");
+    if (statusTextElement) {
+        if (isConnected) {
+            statusTextElement.classList.remove("status-text-disconnected");
+            statusTextElement.classList.add("status-text-connected");
+        } else {
+            statusTextElement.classList.remove("status-text-connected");
+            statusTextElement.classList.add("status-text-disconnected");
+        }
+    }
+}
+
+// Función que verifica el estado de la conexión y actualiza el color
+async function updateConnectionStatusLoop() {
+    try {
+        const isConnected = await invoke("check_connection_status");
+        const statusTextElement = document.getElementById("status-text");
+        
+        if (statusTextElement) {
+            if (isConnected) {
+                statusTextElement.classList.remove("status-text-disconnected");
+                statusTextElement.classList.add("status-text-connected");
+            } else {
+                statusTextElement.classList.remove("status-text-connected");
+                statusTextElement.classList.add("status-text-disconnected");
+            }
+        }
+    } catch (err) {
+        console.error("Error al verificar el estado de conexión:", err);
+    }
+}
+
 async function switchChat(ip) {
     currentChatIp = ip;
-    document.getElementById("connected_username").innerText = "Conectado a " + ip;
+    document.getElementById("status-text").innerText = "Conectado a " + ip;
+    
+    // Asumimos que la conexión tendrá éxito e inmediatamente cambiamos el color
+    setStatusTextColor(true);
 
     loadChatMessages(ip);
 
@@ -71,6 +108,9 @@ async function switchChat(ip) {
         } catch (err) {
             console.error("[UI] Error al cambiar conexión:", err);
             alert("Error al cambiar de conexión: " + err);
+            
+            // Si la conexión falla, cambiamos el color de nuevo a desconectado
+            setStatusTextColor(false);
         }
     }
 }
@@ -133,7 +173,41 @@ async function send_file() {
         alert("No hay chat seleccionado para enviar el archivo.");
         return;
     }
-    await invoke("send_file");
+    
+    try {
+        const fileData = await invoke("send_file", { peer_ip: currentChatIp });
+        
+        if (fileData) {
+            const { fileName, base64Data } = fileData;
+            
+            // Creamos la burbuja para el archivo enviado.
+            const link = document.createElement("a");
+            link.href = "#";
+            link.innerText = fileName;
+            link.classList.add("file");
+            
+            // Opcional: Se puede añadir un evento para, por ejemplo, abrir el archivo.
+            link.onclick = async () => {
+                 alert(`Abriendo archivo: ${fileName}`);
+            };
+
+            // Usamos la función existente createMessage para crear la burbuja.
+            // La clase "sender" se usa para estilizarla como un mensaje enviado.
+            let msgElement = createMessage("", "sender", link);
+            
+            // Añadimos el mensaje a la lista de mensajes en memoria.
+            chats[currentChatIp].push(msgElement);
+            
+            // Agregamos la burbuja al DOM para que sea visible.
+            const messages = document.getElementById("messages");
+            messages.appendChild(msgElement);
+            messages.scrollTop = messages.scrollHeight;
+            
+        }
+    } catch (err) {
+        console.error("Error al enviar archivo:", err);
+        alert("No se pudo enviar el archivo: " + err);
+    }
 }
 
 // VOICE CHAT
@@ -208,7 +282,7 @@ function createMessage(message, className, extraContent = null) {
 }
 
 async function init() {
-    await listen("message", async (event) => {
+    listen("message", async (event) => {
         const { ip, message } = event.payload;
         let msg;
 
@@ -261,6 +335,28 @@ async function init() {
         }
     });
 
+    // Removido 'await' para asegurar que el listener se registra correctamente
+    listen("file_sent", (event) => {
+        const fileName = event.payload;
+
+        // Crear la burbuja para el archivo enviado
+        const link = document.createElement("a");
+        link.href = "#";
+        link.innerText = fileName;
+        link.classList.add("file");
+        
+        let msgElement = createMessage("", "sender", link);
+        
+        if (!chats[currentChatIp]) {
+            chats[currentChatIp] = [];
+        }
+        chats[currentChatIp].push(msgElement);
+        
+        const messages = document.getElementById("messages");
+        messages.appendChild(msgElement);
+        messages.scrollTop = messages.scrollHeight;
+    });
+
     mostrarIpLocal();
 
     const ipInput = document.getElementById("new_chat_ip");
@@ -284,6 +380,12 @@ async function init() {
             !val.endsWith(".")) {
             this.value = val + ".";
         }
+    });
+
+    setInterval(updateConnectionStatusLoop, 3000);
+
+    listen("connection_status", (event) => {
+        setStatusTextColor(event.payload);
     });
 }
 

@@ -25,6 +25,7 @@ use std::sync::{atomic::{AtomicBool, Ordering}};
 use local_ip_address::local_ip;
 use std::thread;
 use std::collections::VecDeque;
+use cpal::{SupportedStreamConfig, StreamConfig};
 
 const PORT: &str = "3333";
 const STORAGE_FOLDER: &str = "received_files";
@@ -133,9 +134,16 @@ fn main() {
             start_voice_call,
             end_voice_call,
             get_local_ip,
+            check_connection_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[tauri::command]
+async fn check_connection_status(state: State<'_, AppState>) -> Result<bool, String> {
+    let current_ip = state.current_ip.lock().await;
+    Ok(current_ip.is_some())
 }
 
 #[tauri::command]
@@ -183,9 +191,10 @@ async fn server_listen<'a>(
                         first_connect: true,
                         ip: addr.ip().to_string(),
                         username: username_clone.clone(),
-                        message: format!("{} connected", username_clone.clone()),
+                        message: format!(""),
                         is_file: false,
                     };
+
 
                     let payload = serde_json::to_string(&msg).unwrap();
                     let enc = match encrypt_to_b64(payload.as_bytes()) {
@@ -241,7 +250,7 @@ fn client_connect(app: AppHandle, state: State<AppState>, host: String, username
                     first_connect: true,
                     ip: ip.clone(),
                     username: username.clone(),
-                    message: format!("{} connected", username.clone()),
+                    message: format!(""),
                     is_file: false,
                 };
 
@@ -261,6 +270,8 @@ fn client_connect(app: AppHandle, state: State<AppState>, host: String, username
                     }
 
                 }
+
+                let _ = app.emit("connection_status", true);
 
                 start_reader(app, read_half, ip);
             }
@@ -327,11 +338,11 @@ fn send(state: State<AppState>,ip: String, message: String, is_file: bool) {
 
 
 #[tauri::command]
-fn send_file(state: State<AppState>) {
+fn send_file(state: State<AppState>, window: tauri::Window) {
     let rt = state.rt.clone();
     let connection = state.connection.clone();
     let username = state.username.clone();
-    let current_ip = state.current_ip.clone(); // no hacemos lock aquí
+    let current_ip = state.current_ip.clone();
 
     rt.spawn(async move {
         let file_path = match rfd::FileDialog::new().pick_file() {
@@ -378,7 +389,10 @@ fn send_file(state: State<AppState>) {
         let payload = serde_json::to_string(&msg).unwrap();
         let enc = match encrypt_to_b64(payload.as_bytes()) {
             Ok(s) => s,
-            Err(e) => { eprintln!("[ENC FILE] {e}"); return; }
+            Err(e) => {
+                eprintln!("[ENC FILE] {e}");
+                return;
+            }
         };
         let data = format!("{:010}{}", enc.len(), enc);
 
@@ -389,6 +403,8 @@ fn send_file(state: State<AppState>) {
                 eprintln!("[FILE] Error al enviar archivo: {}", e);
             } else {
                 println!("[FILE] Archivo '{}' enviado correctamente", file_name);
+                // **Este es el cambio clave:** Emitir el evento al frontend.
+                let _ = window.emit("file_sent", Some(file_name));
             }
         } else {
             eprintln!("[FILE] No hay conexión activa para enviar el archivo");
@@ -426,10 +442,10 @@ async fn start_voice_call(
         let input = host.default_input_device().expect("No input device");
         let output = host.default_output_device().expect("No output device");
         
-        let mut config_input = input.default_input_config().unwrap().config();
-        config_input.sample_rate = SampleRate(44100);
-        let mut config_output = output.default_output_config().unwrap().config();
-        config_output.sample_rate = SampleRate(44100);
+        let config_input = input.default_input_config().unwrap().config();
+        
+        let config_output = output.default_output_config().unwrap().config();
+        
 
         let local_port = 5000;
         let peer_port = 5000;
@@ -448,7 +464,8 @@ async fn start_voice_call(
             let mut recv_buf = [0u8; 4096];
             while r_flag_recv.load(Ordering::SeqCst) {
                 if let Ok((size, _src)) = socket_recv.recv_from(&mut recv_buf) {
-                    let pcm: &[i16] = bytemuck::cast_slice(&recv_buf[..size]);
+                    let aligned_size = size - (size % 2);
+                    let pcm: &[i16] = bytemuck::cast_slice(&recv_buf[..aligned_size]);
                     let mut buf = buffer_clone.lock().unwrap();
                     for &s in pcm {
                         buf.push_back(s);
@@ -507,8 +524,8 @@ async fn start_voice_call(
 
                         let current_sample_f32 = current_sample_i16 as f32 / i16::MAX as f32;
                         
-                        // Aplicar filtro de paso bajo (constante de filtro = 0.5, reduce frecuencias altas)
-                        let filtered_sample = *lfs + 0.5 * (current_sample_f32 - *lfs);
+                        // Aplicar filtro de paso bajo (constante de filtro = 0.7, reduce frecuencias altas)
+                        let filtered_sample = *lfs + 0.7 * (current_sample_f32 - *lfs);
                         
                         *o = filtered_sample;
                         *lfs = filtered_sample;
@@ -720,6 +737,9 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, _ip: String) {
         }
 
         println!("[READER] Terminó la conexión del peer.");
+
+        let app_handle = app.clone();
+        let _ = app_handle.emit("connection_status", false);
     });
 }
 
