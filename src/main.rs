@@ -47,8 +47,6 @@ fn init_db() -> Result<()> {
     Ok(())
 }
 
-
-// remember to call `.manage(MyState::default())`
 #[tauri::command]
 async fn get_local_ip() -> Result<String, String> {
     match local_ip() {
@@ -58,17 +56,15 @@ async fn get_local_ip() -> Result<String, String> {
 }
 
 fn make_cipher() -> Aes256Gcm {
-    // Derivamos 32 bytes desde el passphrase
     let key_hash = Sha256::digest(PASSPHRASE.as_bytes());
     let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&key_hash); // 32 bytes
     Aes256Gcm::new(key)
 }
 
-/// Cifra bytes → devuelve base64(nonce(12B) || ciphertext)
+// encriptacion
 fn encrypt_to_b64(plaintext: &[u8]) -> Result<String, String> {
     let cipher = make_cipher();
 
-    // Nonce de 12 bytes (único por mensaje)
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -76,7 +72,6 @@ fn encrypt_to_b64(plaintext: &[u8]) -> Result<String, String> {
     let ciphertext = cipher.encrypt(nonce, plaintext)
         .map_err(|e| format!("encrypt error: {e}"))?;
 
-    // Concatenamos nonce || ciphertext y lo base64-izamos
     let mut out = Vec::with_capacity(12 + ciphertext.len());
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(&ciphertext);
@@ -84,7 +79,7 @@ fn encrypt_to_b64(plaintext: &[u8]) -> Result<String, String> {
     Ok(base64::encode(out))
 }
 
-/// Recibe base64(nonce||ciphertext) → devuelve bytes en claro
+// desencriptacion
 fn decrypt_from_b64(b64: &str) -> Result<Vec<u8>, String> {
     let cipher = make_cipher();
 
@@ -105,7 +100,7 @@ fn main() {
 
     let rt = Runtime::new().expect("Failed to create Tokio runtime");
 
-    // Crear carpeta para archivos recibidos
+    // creacion de carpeta para resivir archivos
     if !Path::new(STORAGE_FOLDER).exists() {
         fs::create_dir(STORAGE_FOLDER).expect("No se pudo crear la carpeta de archivos recibidos");
         println!("[INIT] Carpeta '{}' creada.", STORAGE_FOLDER);
@@ -294,7 +289,6 @@ fn send(state: State<AppState>,ip: String, message: String, is_file: bool) {
     rt.spawn(async move {
         let username = username.lock().await.clone();
 
-        // Definimos msg aquí para que esté visible en todo el async
         let msg = Message {
             first_connect: false,
             ip: ip.clone(),
@@ -303,9 +297,8 @@ fn send(state: State<AppState>,ip: String, message: String, is_file: bool) {
             is_file,
         };
 
-        // Enviamos mensaje si hay conexión
         let payload = serde_json::to_string(&msg).unwrap();
-        // 🔐 Cifrar
+        // Cifrar mensaje
         let enc = match encrypt_to_b64(payload.as_bytes()) {
             Ok(s) => s,
             Err(e) => { eprintln!("[ENC] {e}"); return; }
@@ -322,8 +315,7 @@ fn send(state: State<AppState>,ip: String, message: String, is_file: bool) {
             eprintln!("[SEND] No hay conexión activa");
         }
 
-        // Guardamos el mensaje en SQLite (si la base está accesible)
-        // Esto puede ser un unwrap o manejar el error mejor
+        // Guardado del mensaje en SQLite
         match Connection::open("chat.db") {
             Ok(conn) => {
                 let res = conn.execute(
@@ -418,7 +410,6 @@ fn send_file(state: State<AppState>, window: tauri::Window) {
 }
 
 // VOICE CHAT 
-// Estructura que guarda la llamada activa 
 struct VoiceCallState { 
     running: Arc<AtomicBool>, 
 } 
@@ -598,19 +589,18 @@ async fn switch_connection(
 
     println!("[SWITCH] Solicitado cambio de conexión a {}", ip);
 
-    // Cierra la conexión anterior si existe
+    // Cierre de conexión anterior
     if let Some(old_write) = connection_lock.take() {
         if let Ok(mut locked) = old_write.try_lock() {
             let _ = locked.shutdown().await;
             println!("[SWITCH] Conexión anterior cerrada");
         }
     }
-
-    // Prepara la nueva dirección con puerto
+    // Puerto
     let addr = format!("{}:3333", ip);
     println!("[SWITCH] Intentando conectar a: {}", addr);
 
-    // Intenta conectar al nuevo IP
+    // Conectar a IP
     match TcpStream::connect(&addr).await {
         Ok(socket) => {
             let (read_half, write_half) = socket.into_split();
@@ -630,7 +620,6 @@ async fn switch_connection(
 
             println!("[SWITCH] Conectado a {}", ip);
 
-            // Inicia el listener con la nueva conexión
             start_reader(app, read_half, ip.clone());
 
             Ok(())
@@ -731,7 +720,6 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, _ip: String) {
 
             match serde_json::from_str::<Message>(&msg_str) {
                 Ok(msg) => {
-                    // Si es el primer mensaje de conexión, emitimos el evento con el nombre de usuario
                     if msg.first_connect {
                         let payload = serde_json::json!({
                             "ip": msg.ip,
@@ -741,7 +729,6 @@ fn start_reader(app: tauri::AppHandle, mut stream: OwnedReadHalf, _ip: String) {
                         if let Err(e) = app.emit("connection_status", payload) {
                             eprintln!("[EMIT] Error al emitir estado de conexión: {}", e);
                         }
-                        // Saltamos el resto del bucle para no procesar el mensaje como uno normal
                         continue;
                     }
 
